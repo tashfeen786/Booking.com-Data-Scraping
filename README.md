@@ -33,20 +33,6 @@ It saves results in **CSV** and **Excel** formats and downloads property images 
 
 ---
 
-## 📂 Project Structure
-Booking-Scraper/
-│
-├── images_hotel/ # Downloaded hotel images
-├── images_apartment/ # Downloaded apartment images
-│
-├── pakistan_hotel_1year.csv # Output CSV
-├── pakistan_hotel_1year.xlsx # Output Excel with embedded images
-│
-├── main.py # Main scraper script
-├── requirements.txt # Python dependencies
-└── README.md # Project documentation
----
-
 ## 🛠 Installation
 
 ### 1️⃣ Clone the Repository
