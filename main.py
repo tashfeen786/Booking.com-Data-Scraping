@@ -4,23 +4,7 @@ from datetime import date, timedelta
 import requests
 import os
 import re
-from openpyxl import load_workbook
-from openpyxl.drawing.image import Image as XLImage
-
-# Check if Pillow installed, if not, warn user
-try:
-    from PIL import Image
-except ImportError:
-    print("⚠ Warning: Pillow library not installed. Run 'pip install Pillow' to enable image embedding.")
-
-ACCOMMODATION_FILTERS = {
-    "hotel": "ht_id=204",
-    "apartment": "ht_id=201",
-    "resort": "ht_id=208",
-    "hostel": "ht_id=203",
-    "villa": "ht_id=213",
-    "guesthouse": "ht_id=216",
-}
+import time
 
 def download_image(url, folder, filename):
     try:
@@ -35,52 +19,24 @@ def download_image(url, folder, filename):
         print(f"⚠ Error downloading image {url}: {e}")
     return None
 
-def embed_images_in_excel(excel_file):
-    try:
-        wb = load_workbook(excel_file)
-        ws = wb.active
+def scrape_booking(property_type):
+    type_map = {
+        "hotel": "ht_id=204",
+        "apartment": "ht_id=201",
+        "home": "ht_id=220"
+    }
 
-        # Find Image Path column index
-        img_col_idx = None
-        for idx, col in enumerate(ws[1], start=1):
-            if col.value == "Image Path":
-                img_col_idx = idx
-                break
-
-        if not img_col_idx:
-            print("⚠ 'Image Path' column not found in Excel. Skipping image embedding.")
-            return
-
-        for row_idx in range(2, ws.max_row + 1):
-            img_path = ws.cell(row=row_idx, column=img_col_idx).value
-            if img_path and os.path.exists(img_path):
-                try:
-                    img = XLImage(img_path)
-                    img.width = 80
-                    img.height = 80
-                    cell_address = f"{ws.cell(row=row_idx, column=img_col_idx).column_letter}{row_idx}"
-                    ws.add_image(img, cell_address)
-                    ws.cell(row=row_idx, column=img_col_idx).value = None
-                except Exception as e:
-                    print(f"⚠ Error inserting image in row {row_idx}: {e}")
-
-        wb.save(excel_file)
-        print(f"✅ Images embedded into {excel_file}")
-    except Exception as e:
-        print(f"⚠ Error during image embedding process: {e}")
-
-def scrape_accommodation(property_type):
-    filter_code = ACCOMMODATION_FILTERS.get(property_type.lower())
-    if not filter_code:
-        print(f"❌ '{property_type}' is not a supported accommodation type.")
+    if property_type.lower() not in type_map:
+        print("❌ Invalid property type. Please choose: hotel, apartment, home")
         return
 
-    max_pages = None  # You can set this to an integer to limit pages per date range
+    filter_code = type_map[property_type.lower()]
+    max_pages = None
     stay_length = 2
     results = []
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)  # headless=True for faster scraping
+        browser = p.chromium.launch(headless=False)
         page = browser.new_page()
 
         start_date = date.today() + timedelta(days=1)
@@ -112,9 +68,9 @@ def scrape_accommodation(property_type):
 
                 hotels = page.locator('div[data-testid="property-card"]')
                 count = hotels.count()
+                print(f"➡️ Found {count} properties on this page.")
 
                 if count == 0:
-                    print("⚠ No property cards found on this page.")
                     break
 
                 for i in range(count):
@@ -131,8 +87,9 @@ def scrape_accommodation(property_type):
                     image_path = None
                     if image_url and hotel_name:
                         safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', hotel_name)
-                        image_filename = f"{safe_name}_{checkin_date}.jpg"
-                        image_path = download_image(image_url, f"images_{property_type}", image_filename)
+                        folder = f"images_{property_type}"
+                        filename = f"{safe_name}_{checkin_date}.jpg"
+                        image_path = download_image(image_url, folder, filename)
 
                     results.append({
                         "Property Type": property_type,
@@ -151,54 +108,28 @@ def scrape_accommodation(property_type):
                 next_button = page.locator('button[aria-label="Next page"]')
                 if next_button.count() == 0 or not next_button.is_enabled():
                     break
+
                 next_button.click()
+                # Wait for new page content to load
                 page.wait_for_selector('div[data-testid="property-card"]', timeout=15000)
                 page_number += 1
 
-            current_date += timedelta(days=7)
+                # Small delay to avoid rate limiting
+                time.sleep(2)
 
-        # Save CSV
-        pd.DataFrame(results).to_csv(f'pakistan_{property_type}_1year.csv', index=False)
+            # Move to next date (1 day step for finer scraping)
+            current_date += timedelta(days=1)
 
-        # Save Excel & embed images if Pillow is installed
-        excel_file = f'pakistan_{property_type}_1year.xlsx'
-        pd.DataFrame(results).to_excel(excel_file, index=False)
+            # Optional delay between date scrapes
+            time.sleep(3)
 
-        try:
-            from PIL import Image  # check if Pillow is installed
-            embed_images_in_excel(excel_file)
-        except ImportError:
-            print("⚠ Pillow not installed. Skipping image embedding.")
+        df = pd.DataFrame(results)
+        df.to_excel(f'pakistan_{property_type}_1year.xlsx', index=False)
+        df.to_csv(f'pakistan_{property_type}_1year.csv', index=False)
+        print(f"✅ Scraped {len(results)} {property_type} entries for 1 year with images downloaded.")
 
-        print(f"✅ Scraped {len(results)} {property_type} entries for 1 year with images embedded in Excel.")
-        browser.close()
-
-def open_other_services(service_name):
-    SERVICE_URLS = {
-        "flight": "https://www.booking.com/flights",
-        "car rental": "https://www.booking.com/cars",
-        "airport taxi": "https://www.booking.com/taxi",
-        "activities": "https://www.booking.com/things-to-do",
-        "tours": "https://www.booking.com/things-to-do",
-    }
-    url = SERVICE_URLS.get(service_name.lower())
-    if not url:
-        print(f"❌ '{service_name}' not supported for scraping.")
-        return
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        print(f"🌐 Opening {service_name} page...")
-        page.goto(url, timeout=60000)
-        page.screenshot(path=f"{service_name}_page.png")
-        print(f"📸 Saved screenshot of {service_name} page.")
         browser.close()
 
 if __name__ == "__main__":
-    service = input("Enter service (hotel, apartment, resort, hostel, villa, guesthouse, flight, car rental, activities): ")
-
-    if service.lower() in ACCOMMODATION_FILTERS:
-        scrape_accommodation(service)
-    else:
-        open_other_services(service)
+    user_type = input("Enter property type (hotel/apartment/home): ")
+    scrape_booking(user_type)
