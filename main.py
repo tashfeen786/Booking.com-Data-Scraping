@@ -6,7 +6,7 @@ import os
 import requests
 
 HEADLESS = False
-DOWNLOAD_IMAGES = True   # Ab image download enabled hai
+DOWNLOAD_IMAGES = True
 SCROLL_PAUSE = 3
 MAX_SCROLLS = 60
 OUTPUT_PREFIX = "pakistan"
@@ -19,6 +19,8 @@ PROPERTY_TYPE_MAP = {
 CITIES = [
     "Karachi", "Lahore", "Islamabad", "Rawalpindi", "Faisalabad", "Multan",
     "Peshawar", "Quetta", "Sialkot", "Gujranwala", "Bahawalpur", "Sukkur",
+    "Hyderabad", "Muzaffarabad", "Sargodha", "Sahiwal", "Dera Ghazi Khan",
+    "Mardan", "Kasur", "Sheikhupura", "Okara", "Jhelum",
     "Hunza", "Skardu", "Khaplu"
 ]
 
@@ -105,24 +107,9 @@ def scrape_city(page, property_type, city):
             try:
                 img = card.locator('img')
                 if img.count():
-                    # Image url fix: sometimes lazy loading attrs
-                    image_url = (img.get_attribute("src") or 
-                                 img.get_attribute("data-src") or 
-                                 img.get_attribute("data-lazy"))
+                    image_url = img.get_attribute("src") or img.get_attribute("data-src") or img.get_attribute("data-lazy")
             except:
                 image_url = None
-            hotel_link = None
-            try:
-                if card.locator('a[data-testid="title-link"]').count():
-                    href = card.locator('a[data-testid="title-link"]').get_attribute("href")
-                    hotel_link = href.split("?")[0] if href else None
-                else:
-                    a = card.locator('a')
-                    if a.count():
-                        href = a.first.get_attribute("href")
-                        hotel_link = href.split("?")[0] if href else None
-            except:
-                hotel_link = None
 
             image_path = None
             if image_url and name and DOWNLOAD_IMAGES:
@@ -138,7 +125,6 @@ def scrape_city(page, property_type, city):
                 "Rating": rating,
                 "Reviews Count": reviews_count,
                 "Location": location,
-                "Hotel Link": hotel_link,
                 "Image URL": image_url,
                 "Image Path": image_path
             })
@@ -163,16 +149,14 @@ def scrape_all_cities(property_type):
         for city in CITIES:
             city_results = scrape_city(page, property_type, city)
             all_results.extend(city_results)
-            time.sleep(5)  # thoda rest do site block na kare
+            time.sleep(5)
 
         browser.close()
 
     df = pd.DataFrame(all_results)
     if not df.empty:
-        df['Hotel Link'] = df['Hotel Link'].fillna('')
-        df['unique_id'] = df.apply(lambda r: r['Hotel Link'] if r['Hotel Link'] else (str(r['Name']) + "||" + str(r['Location'])), axis=1)
-        df.drop_duplicates(subset=['unique_id'], inplace=True)
-        df.drop(columns=['unique_id'], inplace=True)
+        # Remove duplicates based on Name + Location
+        df.drop_duplicates(subset=['Name', 'Location'], inplace=True)
 
     out_xlsx = f"{OUTPUT_PREFIX}_{property_type}_all_cities.xlsx"
     out_csv = f"{OUTPUT_PREFIX}_{property_type}_all_cities.csv"
@@ -181,6 +165,7 @@ def scrape_all_cities(property_type):
 
     print(f"\n✅ Total unique {property_type}s scraped across {len(CITIES)} cities: {len(df)}")
     print("Files saved:", out_xlsx, "|", out_csv)
+
 
 if __name__ == "__main__":
     user_type = input("Enter property type (hotel/apartment/home): ").strip().lower()
