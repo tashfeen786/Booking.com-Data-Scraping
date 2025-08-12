@@ -5,6 +5,10 @@ import requests
 import os
 import re
 
+# Global set to track all properties scraped (across all types & dates)
+seen_properties = set()
+
+# ---------- IMAGE DOWNLOAD FUNCTION ----------
 def download_image(url, folder, filename):
     try:
         os.makedirs(folder, exist_ok=True)
@@ -18,6 +22,7 @@ def download_image(url, folder, filename):
         print(f"⚠ Error downloading image {url}: {e}")
     return None
 
+# ---------- MAIN SCRAPER ----------
 def scrape_booking(property_type):
     type_map = {
         "hotel": "ht_id=204",
@@ -33,7 +38,6 @@ def scrape_booking(property_type):
     max_pages = None
     stay_length = 2
     results = []
-    seen = set()  # duplicate check ke liye
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
@@ -72,27 +76,33 @@ def scrape_booking(property_type):
                 for i in range(count):
                     card = hotels.nth(i)
 
+                    # ---------- PROPERTY NAME ----------
                     hotel_name = card.locator('div[data-testid="title"]').inner_text() if card.locator('div[data-testid="title"]').count() else None
-                    price = card.locator('span[data-testid="price-and-discounted-price"]').inner_text() if card.locator('span[data-testid="price-and-discounted-price"]').count() else None
-                    score = card.locator('div[data-testid="review-score"] > div:nth-child(1)').inner_text() if card.locator('div[data-testid="review-score"] > div:nth-child(1)').count() else None
-                    avg_review = card.locator('div[data-testid="review-score"] > div:nth-child(2) > div:nth-child(1)').inner_text() if card.locator('div[data-testid="review-score"] > div:nth-child(2) > div:nth-child(1)').count() else None
-                    reviews_count = card.locator('div[data-testid="review-score"] > div:nth-child(2) > div:nth-child(2)').inner_text().split()[0] if card.locator('div[data-testid="review-score"] > div:nth-child(2) > div:nth-child(2)').count() else None
-                    location = card.locator('span[data-testid="address"]').inner_text() if card.locator('span[data-testid="address"]').count() else None
-                    image_url = card.locator('img').get_attribute("src") if card.locator('img').count() else None
-
-                    # unique key (name + location + checkin date)
-                    if hotel_name and location:
-                        unique_key = f"{hotel_name.strip()}_{location.strip()}_{checkin_date}"
-                    elif hotel_name:
-                        unique_key = f"{hotel_name.strip()}_{checkin_date}"
-                    else:
-                        continue  # agar naam hi nahi mila to skip
-
-                    # Duplicate check
-                    if unique_key in seen:
+                    if not hotel_name or hotel_name in seen_properties:
                         continue
-                    seen.add(unique_key)
+                    seen_properties.add(hotel_name)
 
+                    # ---------- PRICE ----------
+                    price = card.locator('span[data-testid="price-and-discounted-price"]').inner_text() if card.locator('span[data-testid="price-and-discounted-price"]').count() else None
+
+                    # ---------- REVIEWS ----------
+                    score = card.locator('div[data-testid="review-score"] span').first.inner_text() if card.locator('div[data-testid="review-score"] span').count() else None
+
+                    avg_review = card.locator('div[data-testid="review-score"] div').nth(1).inner_text() if card.locator('div[data-testid="review-score"] div').count() > 1 else None
+
+                    reviews_count = None
+                    if card.locator('div[data-testid="review-score"]').count():
+                        review_texts = card.locator('div[data-testid="review-score"] div').all_inner_texts()
+                        for txt in review_texts:
+                            if "review" in txt.lower():
+                                reviews_count = txt.split()[0]
+                                break
+
+                    # ---------- LOCATION ----------
+                    location = card.locator('span[data-testid="address"]').inner_text() if card.locator('span[data-testid="address"]').count() else None
+
+                    # ---------- IMAGE ----------
+                    image_url = card.locator('img').get_attribute("src") if card.locator('img').count() else None
                     image_path = None
                     if image_url and hotel_name:
                         safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', hotel_name)
@@ -100,6 +110,7 @@ def scrape_booking(property_type):
                         filename = f"{safe_name}_{checkin_date}.jpg"
                         image_path = download_image(image_url, folder, filename)
 
+                    # ---------- SAVE RESULT ----------
                     results.append({
                         "Property Type": property_type,
                         "Check-in": checkin_date,
@@ -114,6 +125,7 @@ def scrape_booking(property_type):
                         "Image Path": image_path
                     })
 
+                # ---------- NEXT PAGE ----------
                 next_button = page.locator('button[aria-label="Next page"]')
                 if next_button.count() == 0 or not next_button.is_enabled():
                     break
@@ -123,13 +135,15 @@ def scrape_booking(property_type):
 
             current_date += timedelta(days=7)
 
+        # ---------- SAVE TO FILE ----------
         df = pd.DataFrame(results)
         df.to_excel(f'pakistan_{property_type}_1year.xlsx', index=False)
         df.to_csv(f'pakistan_{property_type}_1year.csv', index=False)
-        print(f"✅ Scraped {len(results)} {property_type} entries for 1 year (duplicates removed).")
+        print(f"✅ Scraped {len(results)} unique {property_type} entries for 1 year with images downloaded.")
 
         browser.close()
 
+# ---------- MAIN ----------
 if __name__ == "__main__":
     user_type = input("Enter property type (hotel/apartment/home): ")
     scrape_booking(user_type)
