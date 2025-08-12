@@ -1,10 +1,9 @@
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import sync_playwright
 import pandas as pd
 from datetime import date, timedelta
 import requests
 import os
 import re
-import time
 
 def download_image(url, folder, filename):
     try:
@@ -31,9 +30,10 @@ def scrape_booking(property_type):
         return
 
     filter_code = type_map[property_type.lower()]
+    max_pages = None
     stay_length = 2
     results = []
-    scraped_names = set()
+    seen = set()  # duplicate check ke liye
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
@@ -47,29 +47,23 @@ def scrape_booking(property_type):
             checkin_date = current_date.strftime("%Y-%m-%d")
             checkout_date = (current_date + timedelta(days=stay_length)).strftime("%Y-%m-%d")
 
-            print(f"\n🔍 Searching {property_type}s for {checkin_date} → {checkout_date}")
+            print(f"🔍 Searching {property_type}s for {checkin_date} → {checkout_date}")
 
             page_url = (
                 f"https://www.booking.com/searchresults.en-gb.html?"
                 f"checkin={checkin_date}&checkout={checkout_date}&selected_currency=USD"
                 f"&ss=Pakistan&group_adults=1&no_rooms=1&group_children=0&nflt={filter_code}"
             )
-
-            try:
-                page.goto(page_url, timeout=90000, wait_until='networkidle')
-            except PlaywrightTimeoutError:
-                print(f"⚠ Timeout while loading page for dates {checkin_date} to {checkout_date}, skipping to next date.")
-                current_date += timedelta(days=7)
-                continue
+            page.goto(page_url, timeout=60000)
 
             page_number = 1
-            while True:
+            while max_pages is None or page_number <= max_pages:
                 print(f"📄 Scraping page {page_number} for {checkin_date}")
 
                 try:
-                    page.wait_for_selector('div[data-testid="property-card"]', timeout=20000)
-                except PlaywrightTimeoutError:
-                    print("⚠ No properties found or timeout on this page.")
+                    page.wait_for_selector('div[data-testid="property-card"]', timeout=15000)
+                except:
+                    print("⚠ No properties found for this date.")
                     break
 
                 hotels = page.locator('div[data-testid="property-card"]')
@@ -77,89 +71,65 @@ def scrape_booking(property_type):
 
                 for i in range(count):
                     card = hotels.nth(i)
-                    try:
-                        hotel_name = card.locator('div[data-testid="title"]').inner_text() if card.locator('div[data-testid="title"]').count() else None
-                        if not hotel_name or hotel_name in scraped_names:
-                            continue
-                        scraped_names.add(hotel_name)
 
-                        price = card.locator('span[data-testid="price-and-discounted-price"]').inner_text() if card.locator('span[data-testid="price-and-discounted-price"]').count() else None
+                    hotel_name = card.locator('div[data-testid="title"]').inner_text() if card.locator('div[data-testid="title"]').count() else None
+                    price = card.locator('span[data-testid="price-and-discounted-price"]').inner_text() if card.locator('span[data-testid="price-and-discounted-price"]').count() else None
+                    score = card.locator('div[data-testid="review-score"] > div:nth-child(1)').inner_text() if card.locator('div[data-testid="review-score"] > div:nth-child(1)').count() else None
+                    avg_review = card.locator('div[data-testid="review-score"] > div:nth-child(2) > div:nth-child(1)').inner_text() if card.locator('div[data-testid="review-score"] > div:nth-child(2) > div:nth-child(1)').count() else None
+                    reviews_count = card.locator('div[data-testid="review-score"] > div:nth-child(2) > div:nth-child(2)').inner_text().split()[0] if card.locator('div[data-testid="review-score"] > div:nth-child(2) > div:nth-child(2)').count() else None
+                    location = card.locator('span[data-testid="address"]').inner_text() if card.locator('span[data-testid="address"]').count() else None
+                    image_url = card.locator('img').get_attribute("src") if card.locator('img').count() else None
 
-                        try:
-                            score = card.locator('div[aria-label*="Scored"]').inner_text()
-                        except:
-                            score = None
+                    # unique key (name + location + checkin date)
+                    if hotel_name and location:
+                        unique_key = f"{hotel_name.strip()}_{location.strip()}_{checkin_date}"
+                    elif hotel_name:
+                        unique_key = f"{hotel_name.strip()}_{checkin_date}"
+                    else:
+                        continue  # agar naam hi nahi mila to skip
 
-                        try:
-                            avg_review = card.locator('div[class*="f4d1db90c4"]').nth(0).inner_text()
-                        except:
-                            avg_review = None
-
-                        try:
-                            reviews_count_text = card.locator('div[class*="a91bd87e91"]').inner_text()
-                            reviews_count = re.search(r'(\d+)', reviews_count_text).group(1) if reviews_count_text else None
-                        except:
-                            reviews_count = None
-
-                        location = None
-                        try:
-                            if card.locator('span[data-testid="address"]').count():
-                                location = card.locator('span[data-testid="address"]').inner_text()
-                        except:
-                            location = None
-
-                        image_url = card.locator('img').get_attribute("src") if card.locator('img').count() else None
-
-                        image_path = None
-                        if image_url and hotel_name:
-                            safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', hotel_name)
-                            folder = f"images_{property_type}"
-                            filename = f"{safe_name}_{checkin_date}.jpg"
-                            image_path = download_image(image_url, folder, filename)
-
-                        results.append({
-                            "Property Type": property_type,
-                            "Check-in": checkin_date,
-                            "Check-out": checkout_date,
-                            "Name": hotel_name,
-                            "Price": price,
-                            "Score": score,
-                            "Average Review": avg_review,
-                            "Reviews Count": reviews_count,
-                            "Location": location,
-                            "Image URL": image_url,
-                            "Image Path": image_path
-                        })
-                    except Exception as e:
-                        print(f"⚠ Error scraping one property card: {e}")
+                    # Duplicate check
+                    if unique_key in seen:
                         continue
+                    seen.add(unique_key)
+
+                    image_path = None
+                    if image_url and hotel_name:
+                        safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', hotel_name)
+                        folder = f"images_{property_type}"
+                        filename = f"{safe_name}_{checkin_date}.jpg"
+                        image_path = download_image(image_url, folder, filename)
+
+                    results.append({
+                        "Property Type": property_type,
+                        "Check-in": checkin_date,
+                        "Check-out": checkout_date,
+                        "Name": hotel_name,
+                        "Price": price,
+                        "Score": score,
+                        "Average Review": avg_review,
+                        "Reviews Count": reviews_count,
+                        "Location": location,
+                        "Image URL": image_url,
+                        "Image Path": image_path
+                    })
 
                 next_button = page.locator('button[aria-label="Next page"]')
                 if next_button.count() == 0 or not next_button.is_enabled():
-                    print("🚫 No more pages.")
                     break
-
-                try:
-                    next_button.click()
-                    page.wait_for_selector('div[data-testid="property-card"]', timeout=20000)
-                except PlaywrightTimeoutError:
-                    print("⚠ Timeout or no more pages after clicking next.")
-                    break
-
+                next_button.click()
+                page.wait_for_selector('div[data-testid="property-card"]', timeout=15000)
                 page_number += 1
-                time.sleep(2)
 
             current_date += timedelta(days=7)
-            time.sleep(3)
 
-        # Save to files
         df = pd.DataFrame(results)
         df.to_excel(f'pakistan_{property_type}_1year.xlsx', index=False)
         df.to_csv(f'pakistan_{property_type}_1year.csv', index=False)
-        print(f"✅ Scraped {len(results)} unique {property_type} entries for 1 year with images downloaded.")
+        print(f"✅ Scraped {len(results)} {property_type} entries for 1 year (duplicates removed).")
 
         browser.close()
 
 if __name__ == "__main__":
-    user_type = input("Enter property type (hotel/apartment/home): ").strip().lower()
+    user_type = input("Enter property type (hotel/apartment/home): ")
     scrape_booking(user_type)
