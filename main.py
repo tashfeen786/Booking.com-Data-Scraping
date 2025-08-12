@@ -4,6 +4,7 @@ from datetime import date, timedelta
 import requests
 import os
 import re
+import time
 
 def download_image(url, folder, filename):
     try:
@@ -33,7 +34,7 @@ def scrape_booking(property_type):
     stay_length = 2
     results = []
 
-    # Fixed date range: Jan 2024 → Dec 2025
+    # Fixed date range
     start_date = date(2024, 1, 1)
     end_date = date(2025, 12, 31)
 
@@ -74,13 +75,12 @@ def scrape_booking(property_type):
                     hotel_name = card.locator('div[data-testid="title"]').inner_text() if card.locator('div[data-testid="title"]').count() else None
                     price = card.locator('span[data-testid="price-and-discounted-price"]').inner_text() if card.locator('span[data-testid="price-and-discounted-price"]').count() else None
                     
-                    # Get Rating (Fix strict mode error)
+                    # ✅ Fixed Rating (avoid strict mode issue)
                     rating = None
-                    rating_locator = card.locator('div[data-testid="review-score"] div.bc946a29db').first
-                    if rating_locator.count():
-                        rating = rating_locator.inner_text().strip()
+                    if card.locator('div[data-testid="review-score"] div.bc946a29db').count():
+                        rating = card.locator('div[data-testid="review-score"] div.bc946a29db').first.inner_text().strip()
 
-                    # Get Reviews Count (only number)
+                    # ✅ Reviews Count (only number)
                     reviews_count = None
                     if card.locator('div[data-testid="review-score"] div.a91bd87e91').count():
                         reviews_text = card.locator('div[data-testid="review-score"] div.a91bd87e91').inner_text()
@@ -118,11 +118,13 @@ def scrape_booking(property_type):
                 page.wait_for_selector('div[data-testid="property-card"]', timeout=15000)
                 page_number += 1
 
-            # Move to next month
+            # ✅ Go to next month
             if current_date.month == 12:
                 current_date = date(current_date.year + 1, 1, 1)
             else:
                 current_date = date(current_date.year, current_date.month + 1, 1)
+
+            time.sleep(2)  # Avoid being blocked by Booking.com
 
         # Save data
         df = pd.DataFrame(results)
