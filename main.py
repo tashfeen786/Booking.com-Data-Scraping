@@ -30,16 +30,16 @@ def scrape_booking(property_type):
         return
 
     filter_code = type_map[property_type.lower()]
-    max_pages = None
     stay_length = 2
     results = []
+
+    # Fixed date range: Jan 2024 → Dec 2025
+    start_date = date(2024, 1, 1)
+    end_date = date(2025, 12, 31)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
         page = browser.new_page()
-
-        start_date = date.today() + timedelta(days=1)
-        end_date = date.today() + timedelta(days=365)
 
         current_date = start_date
         while current_date <= end_date:
@@ -56,7 +56,7 @@ def scrape_booking(property_type):
             page.goto(page_url, timeout=60000)
 
             page_number = 1
-            while max_pages is None or page_number <= max_pages:
+            while True:
                 print(f"📄 Scraping page {page_number} for {checkin_date}")
 
                 try:
@@ -73,9 +73,21 @@ def scrape_booking(property_type):
 
                     hotel_name = card.locator('div[data-testid="title"]').inner_text() if card.locator('div[data-testid="title"]').count() else None
                     price = card.locator('span[data-testid="price-and-discounted-price"]').inner_text() if card.locator('span[data-testid="price-and-discounted-price"]').count() else None
-                    score = card.locator('div[data-testid="review-score"] > div:nth-child(1)').inner_text() if card.locator('div[data-testid="review-score"] > div:nth-child(1)').count() else None
-                    avg_review = card.locator('div[data-testid="review-score"] > div:nth-child(2) > div:nth-child(1)').inner_text() if card.locator('div[data-testid="review-score"] > div:nth-child(2) > div:nth-child(1)').count() else None
-                    reviews_count = card.locator('div[data-testid="review-score"] > div:nth-child(2) > div:nth-child(2)').inner_text().split()[0] if card.locator('div[data-testid="review-score"] > div:nth-child(2) > div:nth-child(2)').count() else None
+                    
+                    # Get Rating (Fix strict mode error)
+                    rating = None
+                    rating_locator = card.locator('div[data-testid="review-score"] div.bc946a29db').first
+                    if rating_locator.count():
+                        rating = rating_locator.inner_text().strip()
+
+                    # Get Reviews Count (only number)
+                    reviews_count = None
+                    if card.locator('div[data-testid="review-score"] div.a91bd87e91').count():
+                        reviews_text = card.locator('div[data-testid="review-score"] div.a91bd87e91').inner_text()
+                        match = re.search(r'\d+', reviews_text.replace(',', ''))
+                        if match:
+                            reviews_count = match.group()
+
                     location = card.locator('span[data-testid="address"]').inner_text() if card.locator('span[data-testid="address"]').count() else None
                     image_url = card.locator('img').get_attribute("src") if card.locator('img').count() else None
 
@@ -92,8 +104,7 @@ def scrape_booking(property_type):
                         "Check-out": checkout_date,
                         "Name": hotel_name,
                         "Price": price,
-                        "Score": score,
-                        "Average Review": avg_review,
+                        "Rating": rating,
                         "Reviews Count": reviews_count,
                         "Location": location,
                         "Image URL": image_url,
@@ -107,12 +118,17 @@ def scrape_booking(property_type):
                 page.wait_for_selector('div[data-testid="property-card"]', timeout=15000)
                 page_number += 1
 
-            current_date += timedelta(days=7)
+            # Move to next month
+            if current_date.month == 12:
+                current_date = date(current_date.year + 1, 1, 1)
+            else:
+                current_date = date(current_date.year, current_date.month + 1, 1)
 
+        # Save data
         df = pd.DataFrame(results)
-        df.to_excel(f'pakistan_{property_type}_1year.xlsx', index=False)
-        df.to_csv(f'pakistan_{property_type}_1year.csv', index=False)
-        print(f"✅ Scraped {len(results)} {property_type} entries for 1 year with images downloaded.")
+        df.to_excel(f'pakistan_{property_type}_2024_2025.xlsx', index=False)
+        df.to_csv(f'pakistan_{property_type}_2024_2025.csv', index=False)
+        print(f"✅ Scraped {len(results)} {property_type} entries from Jan 2024 to Dec 2025 with images downloaded.")
 
         browser.close()
 
